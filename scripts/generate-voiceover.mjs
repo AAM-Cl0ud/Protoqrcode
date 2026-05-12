@@ -18,10 +18,21 @@ if (!apiKey) {
 
 const html = await readFile(htmlPath, 'utf8');
 const narrations = [...html.matchAll(/narration:\s*("(?:(?:\\.)|[^"\\])*")/g)]
-  .map((match) => JSON.parse(match[1]));
+  .map((match, index) => ({
+    file: `step-${index + 1}.wav`,
+    text: JSON.parse(match[1]),
+    prompt: 'Read this French furniture assembly instruction exactly.',
+  }));
+const cameraAnswers = [...html.matchAll(/cameraAnswer:\s*("(?:(?:\\.)|[^"\\])*")/g)]
+  .map((match, index) => ({
+    file: `camera-answer-${index + 1}.wav`,
+    text: JSON.parse(match[1]),
+    prompt: 'Read this short French spoken answer for an AI camera assistant exactly.',
+  }));
+const clips = [...narrations, ...cameraAnswers];
 
-if (!narrations.length) {
-  console.error('Aucune narration trouvee dans index.html.');
+if (!clips.length) {
+  console.error('Aucun texte audio trouve dans index.html.');
   process.exit(1);
 }
 
@@ -47,9 +58,9 @@ function wavFromPcm(pcm) {
   return Buffer.concat([header, pcm]);
 }
 
-function ttsPrompt(text) {
+function ttsPrompt(text, intro) {
   return [
-    'Read this French furniture assembly instruction exactly.',
+    intro,
     '[calm, warm, close-mic, natural, premium product demo]',
     '[slightly slow, reassuring, precise, no robotic cadence]',
     '[subtle pauses after each sentence, no advertisement tone]',
@@ -57,8 +68,7 @@ function ttsPrompt(text) {
   ].join('\n');
 }
 
-for (const [index, input] of narrations.entries()) {
-  const step = index + 1;
+for (const clip of clips) {
   const response = await fetch(
     'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-tts-preview:generateContent',
     {
@@ -69,7 +79,7 @@ for (const [index, input] of narrations.entries()) {
       },
       body: JSON.stringify({
         contents: [{
-          parts: [{ text: ttsPrompt(input) }],
+          parts: [{ text: ttsPrompt(clip.text, clip.prompt) }],
         }],
         generationConfig: {
           responseModalities: ['AUDIO'],
@@ -88,17 +98,17 @@ for (const [index, input] of narrations.entries()) {
 
   if (!response.ok) {
     const details = await response.text();
-    throw new Error(`Generation etape ${step} echouee: ${response.status} ${details}`);
+    throw new Error(`Generation ${clip.file} echouee: ${response.status} ${details}`);
   }
 
   const data = await response.json();
   const base64 = data.candidates?.[0]?.content?.parts?.find((part) => part.inlineData)?.inlineData?.data;
   if (!base64) {
-    throw new Error(`Generation etape ${step} sans audio: ${JSON.stringify(data).slice(0, 500)}`);
+    throw new Error(`Generation ${clip.file} sans audio: ${JSON.stringify(data).slice(0, 500)}`);
   }
 
   const pcm = Buffer.from(base64, 'base64');
-  const target = join(outputDir, `step-${step}.wav`);
+  const target = join(outputDir, clip.file);
   await writeFile(target, wavFromPcm(pcm));
   console.log(`OK ${target}`);
 }
